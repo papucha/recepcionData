@@ -1,0 +1,7 @@
+com\recepcion\DataJSON\rest\dto\ResultadoDTO.class
+com\recepcion\DataJSON\rest\processor\process.class
+com\recepcion\DataJSON\rest\dto\ResponseDTO.class
+com\recepcion\DataJSON\rest\service\RestService.class
+com\recepcion\DataJSON\rest\processor\LeerQueue.class
+com\recepcion\DataJSON\rest\dto\RequestDTO.class
+com\recepcion\DataJSON\rest\handler\ResponseHandler.class

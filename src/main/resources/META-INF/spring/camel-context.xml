@@ -1,0 +1,185 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:cxf="http://camel.apache.org/schema/cxf"
+	xmlns:ctx="http://www.springframework.org/schema/context"
+	xmlns:jee="http://www.springframework.org/schema/jee"
+	xmlns:osgix="http://www.springframework.org/schema/osgi-compendium"
+	xsi:schemaLocation="
+        http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd
+        http://camel.apache.org/schema/spring http://camel.apache.org/schema/spring/camel-spring.xsd
+        http://camel.apache.org/schema/cxf http://camel.apache.org/schema/cxf/camel-cxf.xsd
+        http://www.springframework.org/schema/context http://www.springframework.org/schema/context/spring-context.xsd
+        http://www.springframework.org/schema/jee http://www.springframework.org/schema/jee/spring-jee.xsd
+        http://www.springframework.org/schema/osgi-compendium http://www.springframework.org/schema/osgi-compendium/spring-osgi-compendium.xsd">
+
+	<import resource="properties-beans.xml" />
+
+	<!-- Buscar el Datasource by jndi -->
+	<jee:jndi-lookup expected-type="javax.sql.DataSource"
+		id="dsCalculadora" jndi-name="osgi:service/jdbc/calculadoraPaula" />
+	<!-- SQL component -->
+	<bean class="org.apache.camel.component.sql.SqlComponent" id="sql">
+		<property name="dataSource" ref="dsCalculadora" />
+	</bean>
+
+	<!-- ActiveMQ Configuration -->
+	<bean class="org.apache.activemq.ActiveMQConnectionFactory"
+		id="jmsConnectionFactory" depends-on="amq1-props">
+		<property name="brokerURL" value="vm://localhost:61616" />
+		<property name="userName" value="admin" />
+		<property name="password" value="admin" />
+	</bean>
+	<bean class="org.apache.activemq.pool.PooledConnectionFactory"
+		destroy-method="stop" id="pooledConnectionFactory" init-method="start">
+		<property name="maxConnections" value="10" />
+		<property name="maximumActiveSessionPerConnection"
+			value="100" />
+		<property name="blockIfSessionPoolIsFull" value="false" />
+		<property name="blockIfSessionPoolIsFullTimeout"
+			value="10000" />
+		<property name="connectionFactory" ref="jmsConnectionFactory" />
+	</bean>
+	<bean class="org.apache.camel.component.jms.JmsConfiguration"
+		id="jmsConfiguration">
+		<property name="connectionFactory"
+			ref="pooledConnectionFactory" />
+	</bean>
+	<bean id="activemq"
+		class="org.apache.activemq.camel.component.ActiveMQComponent">
+		<property name="Configuration" ref="jmsConfiguration" />
+	</bean>
+	<!-- End ActiveMQ Configuration -->
+
+
+	<!-- Enabled Spring Annotations -->
+	<ctx:annotation-config />
+	<ctx:component-scan
+		base-package="com.recepcion.DataJSON.*" />
+
+	<bean class="org.slf4j.LoggerFactory" factory-method="getLogger"
+		id="loggerRef">
+		<constructor-arg index="0" value="recepcionData" />
+	</bean>
+	<!-- call static method -->
+	<bean id="test"
+		class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+		<property name="targetClass" value="org.slf4j.MDC" />
+		<property name="targetMethod" value="put" />
+		<property name="arguments">
+			<list>
+				<value>recepcionData</value>
+				<value>recepcionData</value>
+			</list>
+		</property>
+	</bean>
+	<bean class="com.recepcion.DataJSON.rest.processor.process"
+		id="myProcessor" />
+
+	<cxf:rsServer id="restServer"
+		address="${rest.server.url.path}"
+		serviceClass="com.recepcion.DataJSON.rest.service.RestService"
+		staticSubresourceResolution="true">
+		<cxf:providers>
+			<bean
+				class="com.fasterxml.jackson.jaxrs.json.JacksonJsonProvider" />
+		</cxf:providers>
+	</cxf:rsServer>
+
+	<!-- Use camel-metrics route policy to gather metrics for all routes -->
+	<bean id="metricsRoutePolicyFactory"
+		class="org.apache.camel.component.metrics.routepolicy.MetricsRoutePolicyFactory">
+		<property name="useJmx" value="true" />
+	</bean>
+	<camelContext id="ctx-recepcionData" messageHistory="true"
+		trace="false" useMDCLogging="true"
+		typeConverterStatisticsEnabled="true"
+		xmlns="http://camel.apache.org/schema/spring">
+
+		<propertyPlaceholder
+			location="ref:props, ref:amq1-props" id="propertiesRef" />
+		<endpoint id="rsServerEndpoint"
+			uri="cxfrs://bean://restServer">
+			<property key="bindingStyle" value="SimpleConsumer" />
+			<property key="loggingFeatureEnabled"
+				value="{{rest.server.loggingFeatureEnabled}}" />
+		</endpoint>
+		<!-- <endpoint id="sedaCorreoSoporteEndpoint" uri="seda:mailErrorNotification"/> -->
+<!-- 		<endpoint uri="activemq://queue{{amq.queue.name}}" -->
+<!-- 			id="amqArchivo" /> -->
+
+		<onException id="CustomExceptionHandling">
+			<description></description>
+			<exception>java.lang.Exception</exception>
+			<handled>
+				<constant>true</constant>
+			</handled>
+			<log id="logBodyRequest"
+				message="Exception: ${exception.message}, StackTrace:  ${exception.stacktrace}"
+				loggingLevel="ERROR" loggerRef="loggerRef" />
+			<bean ref="responseHandler">
+				<description>Create Respone Bean</description>
+			</bean>
+			<!-- <to uri="ref:sedaCorreoSoporteEndpoint" pattern="InOnly" /> -->
+		</onException>
+
+		<route id="timerStart">
+<!-- 			 <from uri="timer://MiTimer?fixedRate=true&amp;period=3000" /> -->
+			<from id="_origen" uri="quartz2://MyQuartz?cron=0 0/1 * 1/1 * ? *" />
+			<to uri="direct:select" />
+		</route>
+
+		<route id="ROUTE-LEERBD" streamCache="true">
+			<from id="_from2" uri="direct:select" />
+			<log id="_logMesagge2" loggerRef="loggerRef" loggingLevel="INFO"
+				message="Inicia Servicio Select en BD" />
+			<to uri="sql:{{sql.select}}" />
+			<setProperty id="_setProperty33" propertyName="rows">
+				<simple>${body}</simple>
+			</setProperty>
+			<process id="_process03132323232" ref="myProcessor" />
+			<setBody id="_setBody01">
+				<simple>${body}</simple>
+			</setBody>
+			<to uri="direct:envioAMQ" />
+			<to uri="direct:enviarFTP" />
+			<process id="_process5868" ref="leerQueue" />
+		</route>
+
+		<route id="ROUTE-ENVIO-JSON" customId="true" streamCache="true">
+			<description>Se envia la informacion formato JSOn al JMS</description>
+			<from uri="direct:envioAMQ" />
+			<log message="Iniciando queque" loggingLevel="INFO"
+				loggerRef="loggerRef" />
+			<setBody>
+				<simple>${body}</simple>
+			</setBody>
+			<process id="_process000" ref="myProcessor" />
+			<setBody id="_setBody02">
+				<simple>${body}</simple>
+			</setBody>
+			<to uri="activemq://queue:ARCHIVO.JSON" />
+			<log id="_data09" message="Conexion exitosa AMQ" />
+		</route>
+
+		<route id="ROUTE-ENVIO-FTP" customId="true" streamCache="true">
+			<description>Se envia la informacion formato JSOn a ftp0</description>
+			<from uri="direct:enviarFTP" />
+			<log message="Iniciando FTP" loggingLevel="INFO"
+				loggerRef="loggerRef" />
+			<setBody>
+				<simple>${body}</simple>
+			</setBody>
+			<log id="_data00" message="Resultado sql : ${body}" />
+			<setHeader headerName="CamelFileName">
+				<simple>${date:now:yyyyMMdd-HHmmss}.txt</simple>
+			</setHeader>
+			<log id="_data05"
+				message="NOMBRE DE ARCHIVO ${header.CamelFileName}" />
+			<to
+				uri="ftp://localhost:21?username=archivo&amp;password=RAW(111)&amp;binary=true&amp;passiveMode=true" />
+			<log id="_data05" message="Conexion exitosa ftp" />
+		</route>
+	</camelContext>
+</beans>
+
